@@ -1,5 +1,6 @@
 import json
 
+import mock
 import pytest
 
 from dummyserver.server import HAS_IPV6
@@ -342,6 +343,29 @@ class TestPoolManager(HTTPDummyServerTestCase):
             assert r._pool.num_requests == 2
             assert r._pool.num_connections == 1
             assert len(http.pools) == 1
+
+    @mock.patch("urllib3.response.GzipDecoder.decompress")
+    def test_no_decoding_with_redirect_when_preload_disabled(self, gzip_decompress):
+        """
+        Test that urllib3 does not attempt to decode a gzipped redirect
+        response when `preload_content` is set to `False`.
+        """
+        with PoolManager(block=True, maxsize=2) as http:
+            # Three requests are expected: two redirects and one final / 200 OK.
+            r = http.request(
+                "GET",
+                "%s/redirect" % self.base_url,
+                fields={
+                    "target": "%s/redirect?compressed=true" % self.base_url,
+                    "compressed": "true",
+                },
+                preload_content=False,
+            )
+            assert r.status == 200
+            assert r._pool.num_requests == 3
+            # The redirect bodies were still drained, so the connection was reused.
+            assert r._pool.num_connections == 1
+            gzip_decompress.assert_not_called()
 
     def test_303_redirect_makes_request_lose_body(self):
         with PoolManager() as http:
