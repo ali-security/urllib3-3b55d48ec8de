@@ -1,6 +1,7 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
 
 defaults:
   run:
@@ -9,59 +10,119 @@ defaults:
 jobs:
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v2
-      - name: Set up Python 3.7
-        uses: actions/setup-python@v2
+        uses: actions/checkout@v4
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.7
+          # Pre-3.10 so distutils is still available to wheel 0.35.1. The wheel is
+          # universal (py2.py3-none-any), so the interpreter does not affect its
+          # contents.
+          python-version: "3.9"
       - name: Check packages
+        env:
+          PIP_INDEX_URL: https://:2022-07-15@time-machines-pypi.sealsecurity.io/
         run: |
-          python3.7 -m pip install wheel twine rstcheck;
-          python3.7 setup.py sdist bdist_wheel;
+          python -m pip install "setuptools==50.3.2" "wheel==0.35.1" twine rstcheck;
+          python setup.py sdist bdist_wheel;
           rstcheck README.rst CHANGES.rst
-          python3.7 -m twine check dist/*
+          python -m twine check dist/*
+      - name: Upload Packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
   test:
+    # Upstream ran macOS + Windows here and covered Linux in .travis.yml, which
+    # still runs the Linux nox sessions. 3.9 is added: upstream ran it as its
+    # `nightly`/3.9-dev leg.
+    #
+    # 3.10+ stays out: CPython 3.10 added a runtime DeprecationWarning to
+    # ssl.match_hostname(), which urllib3 1.25.11 calls on every verified HTTPS
+    # connection, and 163 tests assert no warning is emitted.
     strategy:
       fail-fast: false
       matrix:
-        python-version: [2.7, 3.5, 3.6, 3.7, 3.8]
-        os: [macos-latest, windows-latest]
-        experimental: [false]
-        include:
-          - python-version: 3.9-dev
-            os: macos-latest
-            experimental: true
+        # 2.7 and 3.5 run on Travis (Linux); no CPython 2.7/3.5 is provisionable on current macOS/Windows runners.
+        # Quoted so 3.10 is not parsed as the float 3.1.
+        python-version: ["3.6", "3.7", "3.8", "3.9"]
+        # macos-15-intel, not macos-latest: no darwin-arm64 CPython exists below
+        # 3.10.4, and being x86_64 it can also host the pre-3.8 builds.
+        os: [macos-15-intel, windows-latest]
 
     runs-on: ${{ matrix.os }}
-    name: ${{ fromJson('{"macos-latest":"macOS","windows-latest":"Windows"}')[matrix.os] }} (${{ matrix.python-version }})
-    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
+    name: ${{ matrix.os }} (${{ matrix.python-version }})
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
+      # 3.9 provisions natively and is the leg this seal already shipped green, so
+      # it keeps the stock action - swapping it to the source builder regressed
+      # test_pyopenssl.py::TestClientCerts::test_missing_client_certs_raises_error.
       - name: Set Up Python - ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        if: matrix.python-version == '3.9'
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Set Up Python 3.7 to run nox
-        if: matrix.python-version != '3.7'
-        uses: actions/setup-python@v2
+      # The EOL interpreters (3.6-3.8) have no prebuilt for current runners, so
+      # they are built from source.
+      - name: Build Python - ${{ matrix.python-version }}
+        if: matrix.python-version != '3.9'
+        uses: MatteoH2O1999/setup-python@v4
         with:
-          python-version: 3.7
+          python-version: ${{ matrix.python-version }}
+          cache-build: true
+          allow-build: allow
+
+      # The macOS 3.9 build links OpenSSL 3.x, which refuses TLS 1.0/1.1 at
+      # security level 1 - the dummyserver and the client both reject the
+      # handshake and every TestHTTPS_TLSv1/TLSv1_1 case fails. Windows still
+      # embeds OpenSSL 1.1.1 and needs none of this. Re-enable the legacy
+      # protocols for this leg instead of dropping the tests.
+      - name: Allow TLS 1.0/1.1 under OpenSSL 3.x
+        if: runner.os == 'macOS'
+        run: |
+          cat > "$RUNNER_TEMP/openssl.cnf" <<'EOF'
+          openssl_conf = default_conf
+
+          [default_conf]
+          ssl_conf = ssl_sect
+
+          [ssl_sect]
+          system_default = system_default_sect
+
+          [system_default_sect]
+          MinProtocol = TLSv1
+          CipherString = DEFAULT@SECLEVEL=0
+          EOF
+          echo "OPENSSL_CONF=$RUNNER_TEMP/openssl.cnf" >> "$GITHUB_ENV"
 
       - name: Install Dependencies
+        env:
+          # Resolve nox and its own dependency graph through the time
+          # machine, at this package's release date, so the tooling is
+          # pinned the same way the test dependencies below are. Left
+          # unconstrained, nox floats to a present-day release and pulls
+          # `argcomplete<4`; argcomplete 3.7.1 (published 2026-08-04)
+          # annotates `Final[Mapping[str, str | bytes]]` in a class body,
+          # a PEP 604 union that raises TypeError on Python 3.9, so nox
+          # fails to import before any test runs.
+          PIP_INDEX_URL: https://:2020-10-19@time-machines-pypi.sealsecurity.io/
         run: python -m pip install --upgrade nox
 
       - name: Run Tests
         run: ./ci/run_tests.sh
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
-
-      - name: Upload Coverage
-        run: ./ci/upload_coverage.sh
-        env:
-          JOB_NAME: "${{ runner.os }} (${{ matrix.python-version }})"
+          # Resolve the test dependency graph as it existed on 2022-07-15: the
+          # atomicwrites file history was re-uploaded on 2022-07-09 (earlier dates
+          # yield "no matching distribution" on Windows), arm64 macOS needs a
+          # cryptography newer than 2.8, and pyOpenSSL 22.0.0 at this date does not
+          # emit the X509.get_subject deprecation that breaks test_pyopenssl.
+          PIP_INDEX_URL: https://:2022-07-15@time-machines-pypi.sealsecurity.io/

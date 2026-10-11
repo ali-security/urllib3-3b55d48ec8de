@@ -3,19 +3,14 @@
 set -exo pipefail
 
 
-# Linux Setup
-# Even when testing on Python 2, we need Python 3 for Nox. This detects if
-# we're in one of the Travis Python 2 sessions and sets up the Python 3 install
-# for Nox.
-if ! python3 -m pip --version; then
-    curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-    sudo python3 get-pip.py
-    # https://github.com/theacodes/nox/issues/328
-    sudo python3 -m pip install nox==2019.11.9
-else
-    # We're not in "dual Python" mode, so we can just install Nox normally.
-    python3 -m pip install nox
-fi
+# Install Nox into its own venv instead of the job's interpreter: on the 2.7 legs
+# `python3` is a pyenv 3.7 whose scripts dir is not on PATH (`nox: command not
+# found`), and on the 3.x legs the Travis virtualenv ships a present-day
+# setuptools that the pre-installed virtualenv cannot import alongside
+# (`canonicalize_version() got an unexpected keyword argument
+# 'strip_trailing_zero'`). ci/run.sh calls this venv's nox.
+python3 -m venv "${HOME}/noxenv"
+"${HOME}/noxenv/bin/python" -m pip install nox
 
 if [[ "${NOX_SESSION}" == "app_engine" ]]; then
     python -m pip install gcp-devrel-py-tools

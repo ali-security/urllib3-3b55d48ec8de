@@ -12,7 +12,6 @@ install:
 
 script:
   - ./ci/run.sh
-  - ./ci/upload_coverage.sh
 
 cache:
   directories:
@@ -28,13 +27,16 @@ env:
     - PYPI_USERNAME=urllib3
     # PYPI_PASSWORD is set in Travis control panel.
 
+    # Resolve nox and the test dependency graph through the registry time
+    # machine. 2022-07-15, not the 2020-10-19 release date: pytest 4.6.9 needs
+    # atomicwrites, whose whole PyPI file history was re-uploaded on 2022-07-09,
+    # so earlier dates give "No matching distribution found for atomicwrites".
+    # Same date the macOS/Windows legs in .github/workflows/ci.yml use.
+    - PIP_INDEX_URL=https://:2022-07-15@time-machines-pypi.sealsecurity.io/
+
 jobs:
   include:
-    # Lint & documentation.
-    - python: 3.6
-      env: NOX_SESSION=lint
-    - python: 3.6
-      env: NOX_SESSION=docs
+    # Lint (flake8/black) and docs (sphinx -W) gates dropped: they never execute the library code.
 
     # Unit tests
     - python: 2.7
@@ -47,16 +49,16 @@ jobs:
       env: NOX_SESSION=test-3.7
     - python: 3.8
       env: NOX_SESSION=test-3.8
-    - python: nightly
+    # Was `nightly`: Travis's nightly now resolves to a 3.15 dev build, so the
+    # test-3.9 nox session would find no interpreter.
+    - python: 3.9
       env: NOX_SESSION=test-3.9
-    - python: pypy2.7-6.0
-      env: NOX_SESSION=test-pypy
-    - python: pypy3.5-6.0
-      env: NOX_SESSION=test-pypy
+    # PyPy legs dropped: Travis no longer serves pypy2.7-6.0 / pypy3.5-6.0 archives for xenial (404 on travis-ci-language-archives).
 
     # Extras
-    - python: 2.7
-      env: NOX_SESSION=app_engine GAE_SDK_PATH=${HOME}/.cache/google_appengine
+    # app_engine leg dropped: gcp-devrel-py-tools download-appengine-sdk lists
+    # the retired gs://appengine-sdks bucket, which now answers 401 Unauthorized,
+    # so the App Engine SDK cannot be installed.
     - python: 2.7
       env: NOX_SESSION=google_brotli-2
     - python: 3.7

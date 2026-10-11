@@ -43,6 +43,10 @@ class TestConnection(object):
             )
             assert e._peer_cert == cert
 
+    @pytest.mark.skip(
+        reason="Time bomb: asserts the shipped RECENT_DATE (2019-01-01) is less "
+        "than two years old. RECENT_DATE is shipped source and must not change."
+    )
     def test_recent_date(self):
         # This test is to make sure that the RECENT_DATE value
         # doesn't get too far behind what the current date is.
