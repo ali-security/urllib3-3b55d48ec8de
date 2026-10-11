@@ -301,6 +301,24 @@ class TestHTTPHeaderDict(object):
         assert "cookie" not in d
         d.discard("cookie")
 
+    def test_prepare_for_method_change(self, d):
+        content_specific_headers = [
+            "Content-Encoding",
+            "content-language",
+            "CONTENT-LOCATION",
+            "Content-Type",
+            "Content-Length",
+            "Digest",
+            "Last-Modified",
+        ]
+        for header in content_specific_headers:
+            d.add(header, "value")
+        result = d._prepare_for_method_change()
+        assert result is d
+        for header in content_specific_headers:
+            assert header not in d
+        assert d.getlist("cookie") == ["foo", "bar"]
+
     def test_len(self, d):
         assert len(d) == 1
         d.add("cookie", "bla")
